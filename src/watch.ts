@@ -16,19 +16,23 @@ import {
 export type WatchOptions = {
 	/** The database under test: its catalog names each table's primary key. */
 	connectionString: string;
+	/** Transactions whose BEGIN call site this matches aren't watched, such as a test's own that stands in for another session. */
+	ignore?: RegExp;
 };
 
 const transactions = new WeakMap<pg.Client, Transaction>();
 let tables: Tables = new Map();
+let ignore: RegExp | undefined;
 let installed = false;
 
 /**
  * Watches the transactions of every `pg` client in this process, pools'
  * included. Call it once before the tests run; calling it again rereads the
- * tables.
+ * tables and replaces the options.
  */
 export async function watchLocks(options: WatchOptions): Promise<void> {
 	tables = await readTables(options.connectionString);
+	ignore = options.ignore;
 	if (installed) return;
 	installed = true;
 	const query = pg.Client.prototype.query;
@@ -37,27 +41,39 @@ export async function watchLocks(options: WatchOptions): Promise<void> {
 			const [config, parameters] = args;
 			const text = typeof config === "string" ? config : textOf(config);
 			const control = text === undefined ? undefined : controlOf(text);
-			if (control) follow(this, control);
+			const opened = control ? follow(this, control) : undefined;
 			const transaction = transactions.get(this);
 			const answer = Reflect.apply(query, this, args);
 			if (!(answer instanceof Promise) || !transaction || text === undefined)
 				return answer;
+			if (opened)
+				return answer.then((result) => {
+					const site = siteOf(capture());
+					opened.watched = ignore === undefined || site.search(ignore) === -1;
+					return result;
+				});
 			if (control) return answer;
 			const values = valuesOf(config, parameters);
 			return answer.then((result: pg.QueryResult | pg.QueryResult[]) => {
-				if (!Array.isArray(result)) answered(transaction, text, values, result);
+				if (transaction.watched && !Array.isArray(result))
+					answered(transaction, text, values, result);
 				return result;
 			});
 		},
 	});
 }
 
-/** Follows a statement that begins or ends a transaction or a savepoint. */
-function follow(client: pg.Client, control: Control) {
+/** Follows a statement that begins or ends a transaction or a savepoint, and returns the transaction a BEGIN opens. */
+function follow(client: pg.Client, control: Control): Transaction | undefined {
 	const transaction = transactions.get(client);
 	if (control.step === "end") transactions.delete(client);
 	else if (control.step !== "begin") transaction?.follow(control);
-	else if (!transaction) transactions.set(client, new Transaction());
+	else if (!transaction) {
+		const opened = new Transaction();
+		transactions.set(client, opened);
+		return opened;
+	}
+	return undefined;
 }
 
 function answered(
