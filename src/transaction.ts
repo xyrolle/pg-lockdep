@@ -42,6 +42,8 @@ export type Taken = { name: string; mode: Mode; rows: Rows; waits: boolean };
 type Held = Lock & { rows: Rows };
 
 export class Transaction {
+	/** Whether its locks are recorded: not until its BEGIN's call site is known not to be ignored. */
+	watched = false;
 	readonly #held: Held[] = [];
 	/** The keys of the rows it inserted, by table: rows nobody else can hold. */
 	readonly #own = new Map<string, Set<string>>();
