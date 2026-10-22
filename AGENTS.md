@@ -28,8 +28,7 @@ The code is small, readable and maintainable by a stranger. Every line earns its
 - **Errors are typed and actionable.** A message says what went wrong and what to do; nothing is swallowed.
 - **Tests are few, meaningful and readable.** Each one names a behaviour and fails for one reason. No generated matrices and no snapshot dumps.
 - **Every change reaches `main` through a pull request, and nothing merges before review:**
-  - one design read for simplicity and API shape;
-  - one adversarial review (break it, soundness, clean code, simplicity);
+  - one review for design, simplicity, soundness and clean code;
   - findings fixed first, as new commits on the PR branch;
   - then a rebase-merge, so the atomic commits land on `main` as they are.
 
