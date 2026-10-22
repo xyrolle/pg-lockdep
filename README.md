@@ -86,6 +86,7 @@ For other runners, or to inspect the graph yourself:
 ## Limitations
 
 - **It sees only the paths your tests run,** in the transactions they run. A path no test takes isn't checked.
+- **It stays silent where it can't name the rows.** A statement whose rows it can't name, from its answer's primary keys or a `where` on them, is taken to touch rows the transaction already holds in that table, so a cycle through it isn't reported.
 - **It looks for cycles of two locks.** Three or more paths that wait on each other in a ring aren't found.
 - **It doesn't check the order within one table or one advisory purpose,** such as two rows of one table taken in opposite orders.
 - **It reads SQL with patterns, not a parser.** It doesn't see statements sent with a callback, several statements in one string, session-level advisory locks, `MERGE`, the `KEY SHARE` locks of foreign-key checks, locks taken by triggers or cascades, or inserts waiting on each other's unique keys. An `UPDATE` that changes a key column is taken as `NO KEY UPDATE`.
