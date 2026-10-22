@@ -2,11 +2,99 @@
 
 Catch PostgreSQL deadlocks in your test suite before they reach production.
 
-pg-lockdep watches the row locks and advisory locks each transaction takes while your tests run: `SELECT … FOR UPDATE`/`SHARE`, `UPDATE`, `DELETE` and `pg_advisory_xact_lock`. It builds a graph of which lock was held when another was taken. When two code paths take the same locks in opposite orders, and the lock modes conflict, it fails the run and names both call sites. It's [lockdep](https://docs.kernel.org/locking/lockdep-design.html) for Postgres apps.
+pg-lockdep watches the locks each transaction takes while your tests run: `SELECT … FOR UPDATE`/`NO KEY UPDATE`/`SHARE`/`KEY SHARE`, `UPDATE`, `DELETE`, upserts, `LOCK TABLE` and `pg_advisory_xact_lock`. It records which lock a transaction held when it asked for another. When two code paths take two locks in opposite orders, and each one's mode makes the other wait, it fails the run and names both call sites. It's [lockdep](https://docs.kernel.org/locking/lockdep-design.html) for Postgres apps.
 
-It hooks the `pg` driver, so it works with plain `pg` and with anything built on it (Drizzle, Kysely and others). It runs only in tests and adds nothing to production.
+It hooks the `pg` driver, so it works with plain `pg` and with anything built on its promise API (Drizzle, Kysely and others). It runs only in tests and adds nothing to production.
 
-**Status:** being extracted from a production app's test suite, where it's in use. The code and the first release are coming.
+**Status:** 0.1, not yet published to npm.
+
+## Install
+
+```sh
+pnpm add -D pg-lockdep
+```
+
+It needs Node 24 and `pg` 8; the Vitest integration needs Vitest 5.
+
+## Usage with Vitest
+
+```ts
+// vitest.config.ts
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
+	test: {
+		globalSetup: ["pg-lockdep/vitest"],
+		setupFiles: ["./test/locks.ts"],
+	},
+});
+```
+
+```ts
+// test/locks.ts
+import { recordLocks } from "pg-lockdep/vitest";
+
+await recordLocks({
+	connectionString: process.env.DATABASE_URL ?? "postgres://localhost/app_test",
+	// A test's own transaction, begun in a test file, stands in for another session.
+	ignore: /^[^ ]+\.test\.ts:/,
+});
+```
+
+Each test file records what its transactions did. Once `vitest run` has run every file, the run fails with a `LockCycleError` if two paths can deadlock:
+
+```
+LockCycleError: pg-lockdep found 1 lock-order cycle(s) that can deadlock.
+
+invoice and account are taken in opposite orders:
+  one path held invoice (FOR UPDATE) at src/refunds.ts:24 refund < test/refunds.test.ts:9
+      then took account (UPDATE) at src/refunds.ts:25 refund < test/refunds.test.ts:9
+  another held account (FOR UPDATE) at src/payments.ts:18 pay < test/payments.test.ts:7
+      then took invoice (UPDATE) at src/payments.ts:19 pay < test/payments.test.ts:7
+
+Take both locks in the same order on every path, or have both paths first take one lock that makes the other wait.
+```
+
+A call site is the innermost four frames outside `node_modules`, captured through the `await`s that led to the statement.
+
+## How it decides
+
+- **A lock is named by its table, or by an advisory key's purpose.** Rows of one table are one lock, as lockdep names a lock by its class: two paths meet in the graph even when the tests gave them different rows, because production can give them the same. An advisory key hashed from text such as `order:42` belongs to the purpose before its first colon, `order:`; any other key is a lock of its own.
+- **An edge is "held X, then asked for Y"** on rows or keys the transaction didn't already hold in a mode at least as strong. Rows it inserted are its own, and `NOWAIT`, `SKIP LOCKED` and `pg_try_…` wait for nobody, so none of them makes an edge. Rolling back to a savepoint lets go of the locks taken after it.
+- **A cycle is two edges in opposite directions whose modes conflict,** by PostgreSQL's row-level and table-level conflict tables. `FOR SHARE` against `FOR SHARE` never fails.
+- **A lock both paths held first, on the same row or key, in modes that can't be held at once, rules the cycle out.** Only the same row or key counts, as the tests ran it: a per-tenant row serializes two paths only within one tenant, which pg-lockdep can't know.
+- **When it can't tell, it doesn't report.** A statement whose rows it can't name is taken to touch rows the transaction already holds, and one that touched no row took no lock.
+
+## API
+
+### `pg-lockdep/vitest`
+
+- **`recordLocks(options: WatchOptions): Promise<void>`**: for a setup file. Watches the test file's transactions and hands their edges to the run's check.
+- **`setup`, `teardown`**: Vitest's global setup hooks, loaded by naming `"pg-lockdep/vitest"` in `globalSetup`. The teardown throws a `LockCycleError` when the run's edges hold a cycle, and an `Error` when no test file recorded its locks.
+
+### `pg-lockdep`
+
+For other runners, or to inspect the graph yourself:
+
+- **`watchLocks(options: WatchOptions): Promise<void>`**: hooks `pg.Client.prototype.query`, so every client in the process is watched, pools' included. Call it once; calling it again replaces the options.
+- **`WatchOptions`**: `connectionString`, the database under test, whose catalog names each table's primary key; `ignore`, a pattern for the call site of a transaction's `BEGIN`, whose transaction then isn't watched.
+- **`takeEdges(): Edge[]`**: the edges this process recorded since the last call, which start over.
+- **`findCycles(edges: readonly Edge[]): Cycle[]`**: the pairs of locks two paths take in opposite orders and can deadlock on, one cycle per pair.
+- **`LockCycleError`**: an `Error` naming each cycle's two paths, with the cycles on `cycles`.
+- **Types:** `Edge` (`held` and `took`, each a `Lock`, and the `guards` held at that moment), `Lock` (`name`, `mode`, `site`), `Guard`, `Cycle` (two edges) and `Mode`.
+
+## Limitations
+
+- **It sees only the paths your tests run,** in the transactions they run. A path no test takes isn't checked.
+- **It looks for cycles of two locks.** Three or more paths that wait on each other in a ring aren't found.
+- **It doesn't check the order within one table or one advisory purpose,** such as two rows of one table taken in opposite orders.
+- **It reads SQL with patterns, not a parser.** It doesn't see statements sent with a callback, several statements in one string, session-level advisory locks, `MERGE`, the `KEY SHARE` locks of foreign-key checks, locks taken by triggers or cascades, or inserts waiting on each other's unique keys. An `UPDATE` that changes a key column is taken as `NO KEY UPDATE`.
+- **Rows are named by a single-column primary key,** read from the catalog when `watchLocks` runs, and tables by their name without the schema.
+- **The Vitest check runs once `vitest run` ends,** not between reruns in watch mode.
+
+## Development
+
+`pnpm check`, `pnpm typecheck` and `pnpm test`. The tests run against a real PostgreSQL: set `DATABASE_URL` to a server where they may create and drop the database `pglockdep_test`.
 
 ## License
 
