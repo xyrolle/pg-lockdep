@@ -15,6 +15,23 @@ pg-lockdep finds lock-order cycles, the cause of deadlocks, in a PostgreSQL app'
 - **Integration tests run against a real PostgreSQL**, with two real connections for interleavings. Never mock the driver.
 - **Each detection rule has a minimal two-path scenario** that fails, plus its share-mode or same-guard counterpart that passes.
 
+## Quality bar
+
+The code is small, readable and maintainable by a stranger. Every line earns its place.
+
+- **The smallest public API that covers the real use.** No option, flag, hook or extension point without a concrete user today. Adding one later is easy; removing one is a breaking change.
+- **No abstraction without two real uses.** No factories, registries, plugin systems or generic layers "for later".
+- **Short files, short functions and plain control flow.** A reader understands a function without scrolling or jumping between files.
+- **Names say what a thing is in the domain.** No `utils`, `helpers` or `manager` dumping grounds.
+- **No dead code, commented-out code or TODOs in `main`.** Open work goes in `docs/followups.md`.
+- **Dependencies are a cost.** Runtime dependencies are the platform and the declared peer dependencies, nothing else, unless a review agrees otherwise.
+- **Errors are typed and actionable.** A message says what went wrong and what to do; nothing is swallowed.
+- **Tests are few, meaningful and readable.** Each one names a behaviour and fails for one reason. No generated matrices and no snapshot dumps.
+- **Nothing is pushed to `main` before review:**
+  - one design read for simplicity and API shape;
+  - one adversarial review (break it, soundness, clean code, simplicity);
+  - findings fixed first.
+
 ## Working rules
 
 ### Commits and pull requests
