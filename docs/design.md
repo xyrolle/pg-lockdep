@@ -1,0 +1,10 @@
+# Design decisions
+
+- **Hook `pg.Client.prototype.query`, not a query builder.** Every library on `pg` sends its statements there, pools' clients included, so one hook covers Drizzle, Kysely and plain `pg` without adapters.
+- **Read the locks from the SQL text and the answer, without asking the server.** Row locks don't show in `pg_locks` until someone waits on them, and an extra query inside the app's transaction would change what it does. The answer's fields carry each column's table and position, which names the rows a statement locked when it returns their primary keys.
+- **Name a lock by its table or its advisory purpose, as lockdep names a lock by its class.** Tests give each path its own rows; naming locks by row would never let two paths meet.
+- **Keep the call sites on each edge, and capture them once a statement is answered.** A query builder's thenable is called from a microtask, so a stack taken as the statement is sent stops at the builder. Taken in the answer's continuation, it runs back through the `await`s to the app.
+- **Find a cycle as two opposite edges whose modes conflict.** PostgreSQL's conflict tables decide, so share against share never fails. Two-lock cycles are the common inversion; longer rings are a follow-up.
+- **Rule a cycle out only by a guard on the same row or key.** Matching a guard by table would hide real deadlocks between paths that each lock a different row of it first. The cost is that per-tenant guards seen in different tests don't count.
+- **When it can't tell, don't report.** Rows a statement doesn't name are taken to be ones the transaction holds; a statement that touched no row took none; the locks of one statement get no edges between them, since the plan, not the text, orders them. A false failure costs more trust than a missed path.
+- **Fail the Vitest run from the global teardown.** Test files run in their own workers, so each leaves its edges in a folder the global setup opened, through Vitest's `provide`/`inject`; the teardown sees them all and throws.
