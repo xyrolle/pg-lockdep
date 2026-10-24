@@ -44,7 +44,7 @@ await recordLocks({
 Each test file records what its transactions did. Once `vitest run` has run every file, the run fails with a `LockCycleError` if two paths can deadlock:
 
 ```
-LockCycleError: pg-lockdep found 1 lock-order cycle(s) that can deadlock.
+LockCycleError: pg-lockdep found 1 lock-order cycle that can deadlock.
 
 invoice and account are taken in opposite orders:
   one path held invoice (FOR UPDATE) at src/refunds.ts:24 refund < test/refunds.test.ts:9

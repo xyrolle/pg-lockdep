@@ -136,7 +136,7 @@ export class LockCycleError extends Error {
 	constructor(cycles: readonly Cycle[]) {
 		super(
 			[
-				`pg-lockdep found ${cycles.length} lock-order cycle(s) that can deadlock.`,
+				`pg-lockdep found ${cycles.length} lock-order ${cycles.length === 1 ? "cycle" : "cycles"} that can deadlock.`,
 				...cycles.map(describeCycle),
 				"Take the locks in the same order on every path, or have the paths first take one lock that makes the others wait.",
 			].join("\n\n"),
