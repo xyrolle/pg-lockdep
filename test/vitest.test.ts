@@ -29,7 +29,7 @@ it("fails a Vitest run whose test files take two tables in opposite orders, nami
 
 	expect(status).toBe(1);
 	expect(output).toContain(
-		"LockCycleError: pg-lockdep found 1 lock-order cycle(s)",
+		"LockCycleError: pg-lockdep found 1 lock-order cycle that can deadlock.",
 	);
 	for (const side of [
 		"held account (FOR UPDATE)",
