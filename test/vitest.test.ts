@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { expect, inject, it } from "vitest";
 
-it("fails a Vitest run whose test files take two tables in opposite orders, naming both paths", () => {
+/** Runs the fixture project, whose two test files take two tables in opposite orders: its exit status and its output. */
+function runFixture() {
 	const run = spawnSync(
 		process.execPath,
 		[
@@ -15,12 +16,27 @@ it("fails a Vitest run whose test files take two tables in opposite orders, nami
 			env: { ...process.env, DATABASE_URL: inject("databaseUrl") },
 		},
 	);
+	return { status: run.status, output: run.stdout + run.stderr };
+}
 
-	expect(run.status).toBe(1);
-	const output = run.stdout + run.stderr;
+it("fails a Vitest run whose test files take two tables in opposite orders, naming both paths", () => {
+	const { status, output } = runFixture();
+
+	expect(status).toBe(1);
 	expect(output).toContain(
 		"LockCycleError: pg-lockdep found 1 lock-order cycle(s)",
 	);
 	for (const line of [18, 19, 24, 25])
 		expect(output).toContain(`at test/fixture/payments.ts:${line} `);
+});
+
+it("warns at the end of a Vitest run of the row locks whose rows it couldn't name", () => {
+	const { output } = runFixture();
+
+	expect(output).toContain(
+		"pg-lockdep couldn't name the rows of 1 row lock(s), keys unknown",
+	);
+	expect(output).toContain(
+		"account (FOR SHARE) at test/fixture/payments.ts:31 ",
+	);
 });

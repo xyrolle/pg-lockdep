@@ -57,6 +57,14 @@ Take both locks in the same order on every path, or have both paths first take o
 
 A call site is the innermost four frames outside `node_modules`, captured through the `await`s that led to the statement.
 
+The run also warns of each row lock whose rows it couldn't name, since a cycle through them may be missed:
+
+```
+pg-lockdep couldn't name the rows of 1 row lock(s), keys unknown, so a cycle through them may be missed.
+  account (FOR SHARE) at src/audit.ts:12 audit < test/audit.test.ts:5
+Return the rows' primary keys from the statement, or name them in its where.
+```
+
 ## How it decides
 
 - **A lock is named by its table, or by an advisory key's purpose.** Rows of one table are one lock, as lockdep names a lock by its class: two paths meet in the graph even when the tests gave them different rows, because production can give them the same. An advisory key hashed from text such as `order:42` belongs to the purpose before its first colon, `order:`; any other key is a lock of its own.
@@ -70,7 +78,7 @@ A call site is the innermost four frames outside `node_modules`, captured throug
 ### `pg-lockdep/vitest`
 
 - **`recordLocks(options: WatchOptions): Promise<void>`**: for a setup file. Watches the test file's transactions and hands their edges to the run's check.
-- **`setup`, `teardown`**: Vitest's global setup hooks, loaded by naming `"pg-lockdep/vitest"` in `globalSetup`. The teardown throws a `LockCycleError` when the run's edges hold a cycle, and an `Error` when no test file recorded its locks.
+- **`setup`, `teardown`**: Vitest's global setup hooks, loaded by naming `"pg-lockdep/vitest"` in `globalSetup`. The teardown warns of the row locks whose rows it couldn't name, throws a `LockCycleError` when the run's edges hold a cycle, and an `Error` when no test file recorded its locks.
 
 ### `pg-lockdep`
 

@@ -18,3 +18,14 @@ export function takeUnnamed(): Lock[] {
 	unnamed.clear();
 	return taken;
 }
+/** The run's warning about the row locks whose rows it couldn't name, each once. */
+export function describeUnnamed(locks: readonly Lock[]): string {
+	const lines = new Set(
+		locks.map(({ name, mode, site }) => `  ${name} (${mode}) at ${site}`),
+	);
+	return [
+		`pg-lockdep couldn't name the rows of ${lines.size} row lock(s), keys unknown, so a cycle through them may be missed.`,
+		...lines,
+		"Return the rows' primary keys from the statement, or name them in its where.",
+	].join("\n");
+}
