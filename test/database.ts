@@ -41,6 +41,11 @@ export async function setup(project: TestProject) {
 		create table ledger (id int primary key);
 		create table account (id int primary key, balance int not null default 0);
 		create table invoice (id int primary key, total int not null default 0);
+		create table payment (
+			id int primary key,
+			account_id int references account,
+			invoice_id int references invoice
+		);
 		insert into ledger values (1);
 		insert into account (id) values (1), (2);
 		insert into invoice (id) values (1), (2);

@@ -2,7 +2,7 @@
 
 Catch PostgreSQL deadlocks in your test suite before they reach production.
 
-pg-lockdep watches the locks each transaction takes while your tests run: `SELECT … FOR UPDATE`/`NO KEY UPDATE`/`SHARE`/`KEY SHARE`, `UPDATE`, `DELETE`, upserts, `LOCK TABLE` and `pg_advisory_xact_lock`. It records which lock a transaction held when it asked for another. When two code paths take two locks in opposite orders, and each one's mode makes the other wait, it fails the run and names both call sites. It's [lockdep](https://docs.kernel.org/locking/lockdep-design.html) for Postgres apps.
+pg-lockdep watches the locks each transaction takes while your tests run: `SELECT … FOR UPDATE`/`NO KEY UPDATE`/`SHARE`/`KEY SHARE`, `UPDATE`, `DELETE`, upserts, the `KEY SHARE` an insert's foreign-key checks take, `LOCK TABLE` and `pg_advisory_xact_lock`. It records which lock a transaction held when it asked for another. When two code paths take two locks in opposite orders, and each one's mode makes the other wait, it fails the run and names both call sites. It's [lockdep](https://docs.kernel.org/locking/lockdep-design.html) for Postgres apps.
 
 It hooks the `pg` driver, so it works with plain `pg` and with anything built on its promise API (Drizzle, Kysely and others). It runs only in tests and adds nothing to production.
 
@@ -72,6 +72,7 @@ Return the rows' primary keys from the statement, or name them in its where.
 - **A cycle is two edges in opposite directions whose modes conflict,** by PostgreSQL's row-level and table-level conflict tables. `FOR SHARE` against `FOR SHARE` never fails.
 - **A lock both paths held first, on the same row or key, in modes that can't be held at once, rules the cycle out.** Only the same row or key counts, as the tests ran it: a per-tenant row serializes two paths only within one tenant, which pg-lockdep can't know.
 - **When it can't tell, it doesn't fail, and it says so.** A statement whose rows it can't name, from its answer's primary keys or a `where` on them, is taken to touch rows of that table the transaction already holds, or, when it holds none, to cover every later lock of them in that transaction. Either way it's listed as keys unknown.
+- **An insert's foreign-key checks hold the parents' rows it names for `KEY SHARE`,** read from the catalog's foreign keys and the values the insert gives them by parameter. They're the insert's own locks, after the row it writes. An insert that skipped a row on a conflict doesn't say which rows it wrote, so its checks aren't counted.
 - **A statement that answered no row may still hold one.** An update, a delete or a `SELECT … FOR …` that waited for a row a concurrent writer changed, and then found it no longer matching, answers nothing but keeps that row's lock. So it counts as a lock on the rows its `where` names, or on rows it can't name. An advisory call runs once per row its statement answers, so one that answered none took no advisory lock.
 
 ## API
@@ -86,7 +87,7 @@ Return the rows' primary keys from the statement, or name them in its where.
 For other runners, or to inspect the graph yourself:
 
 - **`watchLocks(options: WatchOptions): Promise<void>`**: hooks `pg.Client.prototype.query`, so every client in the process is watched, pools' included. Call it once; calling it again replaces the options.
-- **`WatchOptions`**: `connectionString`, the database under test, whose catalog names each table's primary key; `ignore`, a pattern for the call site of a transaction's `BEGIN`, whose transaction then isn't watched.
+- **`WatchOptions`**: `connectionString`, the database under test, whose catalog names each table's primary key and foreign keys; `ignore`, a pattern for the call site of a transaction's `BEGIN`, whose transaction then isn't watched.
 - **`takeEdges(): Edge[]`**: the edges this process recorded since the last call, which start over.
 - **`takeUnnamed(): Lock[]`**: the row locks this process recorded since the last call whose statements named none of their rows, each once by lock, mode and call site; the list starts over.
 - **`findCycles(edges: readonly Edge[]): Cycle[]`**: the pairs of locks two paths take in opposite orders and can deadlock on, one cycle per pair.
@@ -99,7 +100,7 @@ For other runners, or to inspect the graph yourself:
 - **Where it can't name the rows, it can miss a cycle.** A statement whose rows it can't name is taken to touch rows of that table the transaction already holds, or to cover all of them for the rest of the transaction, so a cycle through a row it didn't see isn't reported. It lists such statements as keys unknown: make them return their primary keys, or name them in the `where`.
 - **It looks for cycles of two locks.** Three or more paths that wait on each other in a ring aren't found.
 - **It doesn't check the order within one table or one advisory purpose,** such as two rows of one table taken in opposite orders.
-- **It reads SQL with patterns, not a parser.** It doesn't see statements sent with a callback, several statements in one string, session-level advisory locks, `MERGE`, the `KEY SHARE` locks of foreign-key checks, locks taken by triggers or cascades, or inserts waiting on each other's unique keys. An `UPDATE` that changes a key column is taken as `NO KEY UPDATE`.
+- **It reads SQL with patterns, not a parser.** It doesn't see statements sent with a callback, several statements in one string, session-level advisory locks, `MERGE`, the foreign-key checks of an update that changes a key, of a multi-column key or of a value not given by parameter, locks taken by triggers or cascades, or inserts waiting on each other's unique keys. An `UPDATE` that changes a key column is taken as `NO KEY UPDATE`.
 - **Rows are named by a single-column primary key,** read from the catalog when `watchLocks` runs, and tables by their name without the schema.
 - **The Vitest check runs once `vitest run` ends,** not between reruns in watch mode.
 

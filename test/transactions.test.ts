@@ -84,6 +84,23 @@ it("holds the row a SELECT … FOR UPDATE waited for and found no longer matchin
 	).toEqual({ answered: 0, probe: "55P03", edges: ["invoice > account"] });
 });
 
+it("takes no foreign-key check of an insert that skipped a row on a conflict, as it can't tell which rows it wrote", async () => {
+	await pool.query("insert into payment (id) values (20)");
+	try {
+		await inTransaction(async (client) => {
+			await client.query("select id from invoice where id = 1 for update");
+			await client.query(
+				"insert into payment (id, account_id) values ($1, $2), ($3, $4) on conflict do nothing",
+				[20, 1, 21, 2],
+			);
+		});
+
+		expect(edges()).toEqual([]);
+	} finally {
+		await pool.query("delete from payment where id = 20");
+	}
+});
+
 it("takes no edge for an advisory call a statement made for none of its rows, as it answered none", async () => {
 	await inTransaction(async (client) => {
 		await client.query("select id from account where id = 1 for update");

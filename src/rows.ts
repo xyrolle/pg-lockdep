@@ -1,7 +1,8 @@
 import pg from "pg";
 
 // Which rows a statement locked, by their primary keys: from its answer
-// when it returns them, else from a `where` that names them by parameter.
+// when it returns them, else from a `where` that names them by parameter,
+// and the parents' rows its foreign keys' checks lock.
 
 /** Each table's single-column primary key, by the table's oid, which an answer's fields carry. */
 export type Tables = ReadonlyMap<
@@ -9,11 +10,19 @@ export type Tables = ReadonlyMap<
 	{ name: string; key: string; position: number }
 >;
 
-export async function readTables(connectionString: string): Promise<Tables> {
+/** Each table's single-column foreign keys to a parent's primary key, by the table's name. */
+export type ForeignKeys = ReadonlyMap<
+	string,
+	readonly { column: string; parent: string }[]
+>;
+
+export async function readCatalog(
+	connectionString: string,
+): Promise<{ tables: Tables; foreignKeys: ForeignKeys }> {
 	const client = new pg.Client({ connectionString });
 	await client.connect();
 	try {
-		const { rows } = await client.query<{
+		const keys = await client.query<{
 			oid: number;
 			name: string;
 			key: string;
@@ -25,7 +34,24 @@ export async function readTables(connectionString: string): Promise<Tables> {
 			join pg_attribute a on a.attrelid = c.oid and a.attnum = i.indkey[0]
 			where i.indisprimary and i.indnkeyatts = 1`,
 		);
-		return new Map(rows.map(({ oid, ...table }) => [oid, table]));
+		const references = await client.query<{
+			table: string;
+			column: string;
+			parent: string;
+		}>(
+			`select c.relname as table, a.attname as column, p.relname as parent
+			from pg_constraint f
+			join pg_class c on c.oid = f.conrelid
+			join pg_class p on p.oid = f.confrelid
+			join pg_attribute a on a.attrelid = f.conrelid and a.attnum = f.conkey[1]
+			join pg_index i on i.indrelid = f.confrelid and i.indisprimary
+				and i.indnkeyatts = 1 and i.indkey[0] = f.confkey[1]
+			where f.contype = 'f' and cardinality(f.conkey) = 1`,
+		);
+		return {
+			tables: new Map(keys.rows.map(({ oid, ...table }) => [oid, table])),
+			foreignKeys: Map.groupBy(references.rows, (reference) => reference.table),
+		};
 	} finally {
 		await client.end();
 	}
@@ -79,4 +105,24 @@ export function keysInWhere(
 		const value = values[Number(position) - 1];
 		return (Array.isArray(value) ? value : [value]).map(String);
 	});
+}
+
+/**
+ * The rows of parents an insert's foreign keys name, which their checks
+ * hold for key share: by parent, the values its rows give each key column.
+ */
+export function namedParents(
+	inserted: { table: string; rows: readonly ReadonlyMap<string, unknown>[] },
+	foreignKeys: ForeignKeys,
+): Map<string, string[]> {
+	const parents = new Map<string, string[]>();
+	for (const { column, parent } of foreignKeys.get(inserted.table) ?? []) {
+		const keys = inserted.rows.flatMap((row) => {
+			const value = row.get(column);
+			return value === null || value === undefined ? [] : [String(value)];
+		});
+		if (keys.length > 0)
+			parents.set(parent, [...(parents.get(parent) ?? []), ...keys]);
+	}
+	return parents;
 }
