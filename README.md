@@ -60,7 +60,7 @@ A call site is the innermost four frames outside `node_modules`, captured throug
 The run also warns of each row lock whose rows it couldn't name, since a cycle through them may be missed:
 
 ```
-pg-lockdep couldn't name the rows of 1 row lock(s), keys unknown, so a cycle through them may be missed.
+pg-lockdep couldn't name the rows of 1 row lock, keys unknown, so a cycle through it may be missed.
   account (FOR SHARE) at src/audit.ts:12 audit < test/audit.test.ts:5
 Return the rows' primary keys from the statement, or name them in its where.
 ```

@@ -34,7 +34,7 @@ it("warns at the end of a Vitest run of the row locks whose rows it couldn't nam
 	const { output } = runFixture();
 
 	expect(output).toContain(
-		"pg-lockdep couldn't name the rows of 1 row lock(s), keys unknown",
+		"pg-lockdep couldn't name the rows of 1 row lock, keys unknown,",
 	);
 	expect(output).toMatch(
 		/^ {2}account \(FOR SHARE\) at test\/fixture\/payments\.ts:\d+ /m,
