@@ -1,5 +1,6 @@
 import { type Guard, type Lock, recordEdge } from "./graph.ts";
 import { covers, type Mode } from "./modes.ts";
+import { recordUnnamed } from "./unnamed.ts";
 
 // One transaction on one connection, from its BEGIN to its end: the locks
 // it holds, and an edge from each of them to every lock it then asks for on
@@ -76,9 +77,10 @@ export class Transaction {
 		const before = [...this.#held];
 		const guards = before.flatMap(guardOf);
 		for (const lock of locks) {
+			const took = { name: lock.name, mode: lock.mode, site };
+			if (lock.rows === "unknown") recordUnnamed(took);
 			const rows = this.#uncovered(lock);
 			if (!rows) continue;
-			const took = { name: lock.name, mode: lock.mode, site };
 			if (lock.waits)
 				for (const { name, mode, site } of before)
 					if (name !== lock.name)

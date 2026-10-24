@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { takeEdges } from "../src/index.ts";
+import { takeEdges, takeUnnamed } from "../src/index.ts";
 import { inTransaction } from "./db.ts";
 
 const edges = () =>
@@ -46,4 +46,24 @@ it("takes no edge to a row the transaction inserted: nobody else can hold it", a
 	});
 
 	expect(edges()).toEqual([]);
+});
+
+it("lists a row lock whose statement names none of its rows, keys unknown", async () => {
+	await inTransaction(async (client) => {
+		await client.query(
+			"select balance from account where balance >= 0 for update",
+		);
+		await client.query("select id from invoice where id = 1 for update");
+		await client.query("update invoice set total = 2 where id = $1", [1]);
+	});
+
+	expect(
+		takeUnnamed().map(({ name, mode, site }) => [name, mode, site]),
+	).toEqual([
+		[
+			"account",
+			"FOR UPDATE",
+			expect.stringMatching(/^test\/transactions\.test\.ts:\d+ /),
+		],
+	]);
 });

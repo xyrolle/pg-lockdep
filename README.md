@@ -63,7 +63,7 @@ A call site is the innermost four frames outside `node_modules`, captured throug
 - **An edge is "held X, then asked for Y"** on rows or keys the transaction didn't already hold in a mode at least as strong. Rows it inserted are its own, and `NOWAIT`, `SKIP LOCKED` and `pg_try_…` wait for nobody, so none of them makes an edge. Rolling back to a savepoint lets go of the locks taken after it.
 - **A cycle is two edges in opposite directions whose modes conflict,** by PostgreSQL's row-level and table-level conflict tables. `FOR SHARE` against `FOR SHARE` never fails.
 - **A lock both paths held first, on the same row or key, in modes that can't be held at once, rules the cycle out.** Only the same row or key counts, as the tests ran it: a per-tenant row serializes two paths only within one tenant, which pg-lockdep can't know.
-- **When it can't tell, it doesn't report.** A statement whose rows it can't name is taken to touch rows the transaction already holds, and one that touched no row took no lock.
+- **When it can't tell, it doesn't fail, and it says so.** A statement whose rows it can't name, from its answer's primary keys or a `where` on them, is taken to touch rows of that table the transaction already holds, or, when it holds none, to cover every later lock of them in that transaction. Either way it's listed as keys unknown. One that touched no row took no lock.
 
 ## API
 
@@ -79,6 +79,7 @@ For other runners, or to inspect the graph yourself:
 - **`watchLocks(options: WatchOptions): Promise<void>`**: hooks `pg.Client.prototype.query`, so every client in the process is watched, pools' included. Call it once; calling it again replaces the options.
 - **`WatchOptions`**: `connectionString`, the database under test, whose catalog names each table's primary key; `ignore`, a pattern for the call site of a transaction's `BEGIN`, whose transaction then isn't watched.
 - **`takeEdges(): Edge[]`**: the edges this process recorded since the last call, which start over.
+- **`takeUnnamed(): Lock[]`**: the row locks this process recorded since the last call whose statements named none of their rows, each once by lock, mode and call site; the list starts over.
 - **`findCycles(edges: readonly Edge[]): Cycle[]`**: the pairs of locks two paths take in opposite orders and can deadlock on, one cycle per pair.
 - **`LockCycleError`**: an `Error` naming each cycle's two paths, with the cycles on `cycles`.
 - **Types:** `Edge` (`held` and `took`, each a `Lock`, and the `guards` held at that moment), `Lock` (`name`, `mode`, `site`), `Guard`, `Cycle` (two edges) and `Mode`.
@@ -86,7 +87,7 @@ For other runners, or to inspect the graph yourself:
 ## Limitations
 
 - **It sees only the paths your tests run,** in the transactions they run. A path no test takes isn't checked.
-- **It stays silent where it can't name the rows.** A statement whose rows it can't name, from its answer's primary keys or a `where` on them, is taken to touch rows the transaction already holds in that table, so a cycle through it isn't reported.
+- **Where it can't name the rows, it can miss a cycle.** A statement whose rows it can't name is taken to touch rows of that table the transaction already holds, or to cover all of them for the rest of the transaction, so a cycle through a row it didn't see isn't reported. It lists such statements as keys unknown: make them return their primary keys, or name them in the `where`.
 - **It looks for cycles of two locks.** Three or more paths that wait on each other in a ring aren't found.
 - **It doesn't check the order within one table or one advisory purpose,** such as two rows of one table taken in opposite orders.
 - **It reads SQL with patterns, not a parser.** It doesn't see statements sent with a callback, several statements in one string, session-level advisory locks, `MERGE`, the `KEY SHARE` locks of foreign-key checks, locks taken by triggers or cascades, or inserts waiting on each other's unique keys. An `UPDATE` that changes a key column is taken as `NO KEY UPDATE`.
