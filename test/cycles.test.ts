@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { type Edge, findCycles, takeEdges } from "../src/index.ts";
+import {
+	type Edge,
+	findCycles,
+	LockCycleError,
+	takeEdges,
+} from "../src/index.ts";
 import { inTransaction, pool, until } from "./db.ts";
 
 const locks = (edges: readonly Edge[]) =>
@@ -92,6 +97,93 @@ describe("two paths that take two tables in opposite orders", () => {
 		});
 
 		expect(findCycles(takeEdges())).toEqual([]);
+	});
+});
+
+describe("three paths that each take two of three tables, in a ring", () => {
+	const ring = [
+		["ledger", "account"],
+		["account", "invoice"],
+		["invoice", "ledger"],
+	] as const;
+
+	it("form a cycle when each waits for the lock the next one holds", async () => {
+		for (const [first, then] of ring)
+			await inTransaction(async (client) => {
+				await client.query(`select id from ${first} where id = 1 for update`);
+				await client.query(`select id from ${then} where id = 1 for update`);
+			});
+
+		const cycles = findCycles(takeEdges());
+		expect(cycles.map(locks)).toEqual([
+			["account > invoice", "invoice > ledger", "ledger > account"],
+		]);
+		const { message } = new LockCycleError(cycles);
+		expect(message).toContain(
+			"ledger, account and invoice are taken in a ring, each path asking for the lock the next one holds:",
+		);
+		expect(
+			message.match(/held .* at test\/cycles\.test\.ts:\d+ /g),
+		).toHaveLength(3);
+	});
+
+	it("deadlock in Postgres when their steps interleave", async () => {
+		const sessions = [];
+		for (const [first, then] of ring)
+			sessions.push({ first, then, client: await pool.connect() });
+		try {
+			for (const { first, client } of sessions) {
+				await client.query("begin");
+				await client.query(`select id from ${first} where id = 1 for update`);
+			}
+			const asked = [];
+			for (const [at, { then, client }] of sessions.entries()) {
+				const {
+					rows: [{ pid }],
+				} = await client.query("select pg_backend_pid() as pid");
+				asked.push(
+					client.query(`select id from ${then} where id = 1 for update`),
+				);
+				if (at < sessions.length - 1) await waitingForLock(pid);
+			}
+
+			// Postgres ends one of them; the others go on once it's rolled back.
+			const ended = await Promise.any(
+				asked.map((request) =>
+					request.then(
+						() => Promise.reject(new Error("went through")),
+						(error: { code: string }) => error.code,
+					),
+				),
+			);
+			expect(ended).toBe("40P01");
+		} finally {
+			await Promise.all(
+				sessions.map(async ({ client }) => {
+					await client.query("rollback");
+					client.release();
+				}),
+			);
+		}
+	});
+
+	it("form no cycle when two of them first hold the same row in modes that wait for each other", async () => {
+		await pool.query("insert into payment (id) values (30)");
+		try {
+			for (const [at, [first, then]] of ring.entries())
+				await inTransaction(async (client) => {
+					if (at < 2)
+						await client.query(
+							"select id from payment where id = 30 for update",
+						);
+					await client.query(`select id from ${first} where id = 1 for update`);
+					await client.query(`select id from ${then} where id = 1 for update`);
+				});
+
+			expect(findCycles(takeEdges())).toEqual([]);
+		} finally {
+			await pool.query("delete from payment where id = 30");
+		}
 	});
 });
 

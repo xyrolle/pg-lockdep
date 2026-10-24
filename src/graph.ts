@@ -1,8 +1,10 @@
 import { conflicts, type Mode } from "./modes.ts";
 
 // The "held X, then took Y" graph of every watched transaction, and its
-// cycles: two paths that take two locks in opposite orders, each in a mode
-// that waits for the other's, deadlock once their steps interleave.
+// cycles: paths that each hold the lock the next one then asks for, in a
+// mode that makes it wait, deadlock once their steps interleave. Two paths
+// that take two locks in opposite orders are the common case; three that
+// each take two of three locks are a ring.
 
 /** A lock, its mode, and where it was taken: the innermost frames outside `node_modules`. */
 export type Lock = { name: string; mode: Mode; site: string };
@@ -17,8 +19,8 @@ export type Guard = { name: string; mode: Mode; keys?: readonly string[] };
  */
 export type Edge = { held: Lock; took: Lock; guards: readonly Guard[] };
 
-/** Two paths, each holding the lock the other then asks for. */
-export type Cycle = readonly [Edge, Edge];
+/** Two or three paths, each asking for the lock the next one holds. */
+export type Cycle = readonly Edge[];
 
 const edges = new Map<string, Edge>();
 
@@ -68,40 +70,66 @@ const guarded = (one: Edge, other: Edge) =>
 		),
 	);
 
-const deadlocks = (one: Edge, other: Edge) =>
-	conflicts(one.held.mode, other.took.mode) &&
-	conflicts(other.held.mode, one.took.mode) &&
-	!guarded(one, other);
+/**
+ * Whether a ring of paths can deadlock: each one's request waits for the
+ * lock the next one holds, and no two of them held a guard they can't hold
+ * at once, which would keep them from running together.
+ */
+function deadlocks(ring: Cycle): boolean {
+	const waits = ring.every((edge, at) => {
+		const next = ring[(at + 1) % ring.length];
+		return next !== undefined && conflicts(next.held.mode, edge.took.mode);
+	});
+	return (
+		waits &&
+		!ring.some((one, at) =>
+			ring.slice(at + 1).some((other) => guarded(one, other)),
+		)
+	);
+}
 
-/** The pairs of locks some two paths take in opposite orders and can deadlock on, one cycle per pair. */
+/** The rings of two or three locks some paths take in turn and can deadlock on, one cycle per set of locks. */
 export function findCycles(edges: readonly Edge[]): Cycle[] {
-	const byLocks = Map.groupBy(edges, ({ held, took }) =>
+	const between = Map.groupBy(edges, ({ held, took }) =>
 		JSON.stringify([held.name, took.name]),
 	);
+	const from = Map.groupBy(edges, ({ held }) => held.name);
+	const back = (edge: Edge, to: string) =>
+		between.get(JSON.stringify([edge.took.name, to])) ?? [];
 	const cycles = new Map<string, Cycle>();
-	for (const one of edges)
-		for (const other of byLocks.get(
-			JSON.stringify([one.took.name, one.held.name]),
-		) ?? []) {
-			const pair = JSON.stringify([one.held.name, one.took.name].sort());
-			if (!cycles.has(pair) && deadlocks(one, other))
-				cycles.set(pair, [one, other]);
-		}
+	const consider = (ring: Cycle) => {
+		const locks = JSON.stringify(ring.map(({ held }) => held.name).sort());
+		if (!cycles.has(locks) && deadlocks(ring)) cycles.set(locks, ring);
+	};
+	for (const one of edges) {
+		for (const other of back(one, one.held.name)) consider([one, other]);
+		for (const next of from.get(one.took.name) ?? [])
+			if (next.took.name !== one.held.name)
+				for (const last of back(next, one.held.name))
+					consider([one, next, last]);
+	}
 	return [...cycles.values()];
 }
 
 const side = ({ name, mode, site }: Lock) => `${name} (${mode}) at ${site}`;
 
-const describeCycle = ([one, other]: Cycle) =>
-	[
-		`${one.held.name} and ${one.took.name} are taken in opposite orders:`,
-		`  one path held ${side(one.held)}`,
-		`      then took ${side(one.took)}`,
-		`  another held ${side(other.held)}`,
-		`      then took ${side(other.took)}`,
+function describeCycle(cycle: Cycle): string {
+	const names = cycle.map(({ held }) => held.name);
+	const last = names.pop();
+	const taken =
+		cycle.length === 2
+			? "are taken in opposite orders:"
+			: "are taken in a ring, each path asking for the lock the next one holds:";
+	return [
+		`${names.join(", ")} and ${last} ${taken}`,
+		...cycle.flatMap(({ held, took }, at) => [
+			`  ${at === 0 ? "one path" : "another"} held ${side(held)}`,
+			`      then took ${side(took)}`,
+		]),
 	].join("\n");
+}
 
-/** Thrown at the end of a run whose paths can deadlock: each cycle, named by both paths' call sites. */
+/** Thrown at the end of a run whose paths can deadlock: each cycle, named by its paths' call sites. */
 export class LockCycleError extends Error {
 	readonly cycles: readonly Cycle[];
 
@@ -110,7 +138,7 @@ export class LockCycleError extends Error {
 			[
 				`pg-lockdep found ${cycles.length} lock-order cycle(s) that can deadlock.`,
 				...cycles.map(describeCycle),
-				"Take both locks in the same order on every path, or have both paths first take one lock that makes the other wait.",
+				"Take the locks in the same order on every path, or have the paths first take one lock that makes the others wait.",
 			].join("\n\n"),
 		);
 		this.name = "LockCycleError";
