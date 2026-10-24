@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { takeEdges, takeUnnamed } from "../src/index.ts";
-import { inTransaction, pool } from "./db.ts";
+import { inTransaction, pool, until } from "./db.ts";
 
 const edges = () =>
 	takeEdges().map(({ held, took }) => `${held.name} > ${took.name}`);
@@ -135,12 +135,9 @@ async function afterAConcurrentWrite(statement: string) {
 }
 
 /** Returns once some statement waits for a lock the backend holds. */
-async function waitedOn(pid: number) {
-	for (;;) {
-		const { rows } = await pool.query<{ waiting: boolean }>(
-			"select exists (select from pg_locks where not granted and $1 = any(pg_blocking_pids(pid))) as waiting",
-			[pid],
-		);
-		if (rows[0]?.waiting) return;
-	}
-}
+const waitedOn = (pid: number) =>
+	until(
+		"select exists (select from pg_locks where not granted and $1 = any(pg_blocking_pids(pid))) as done",
+		[pid],
+		`No statement waited for a lock backend ${pid} holds within five seconds.`,
+	);

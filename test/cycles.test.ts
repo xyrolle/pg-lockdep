@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { type Edge, findCycles, takeEdges } from "../src/index.ts";
-import { inTransaction, pool } from "./db.ts";
+import { inTransaction, pool, until } from "./db.ts";
 
 const locks = (edges: readonly Edge[]) =>
 	edges.map(({ held, took }) => `${held.name} > ${took.name}`).sort();
@@ -168,12 +168,9 @@ describe("LOCK TABLE", () => {
 });
 
 /** Returns once the backend's statement waits for a lock another transaction holds. */
-async function waitingForLock(pid: number) {
-	for (;;) {
-		const { rows } = await pool.query<{ waiting: boolean }>(
-			"select cardinality(pg_blocking_pids($1)) > 0 as waiting",
-			[pid],
-		);
-		if (rows[0]?.waiting) return;
-	}
-}
+const waitingForLock = (pid: number) =>
+	until(
+		"select cardinality(pg_blocking_pids($1)) > 0 as done",
+		[pid],
+		`Backend ${pid} didn't wait for a lock within five seconds.`,
+	);
