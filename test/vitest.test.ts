@@ -36,7 +36,7 @@ it("warns at the end of a Vitest run of the row locks whose rows it couldn't nam
 	expect(output).toContain(
 		"pg-lockdep couldn't name the rows of 1 row lock(s), keys unknown",
 	);
-	expect(output).toContain(
-		"account (FOR SHARE) at test/fixture/payments.ts:31 ",
+	expect(output).toMatch(
+		/^ {2}account \(FOR SHARE\) at test\/fixture\/payments\.ts:\d+ /m,
 	);
 });
