@@ -37,6 +37,53 @@ const UPSERT = /\bon\s+conflict\b[\s\S]*\bdo\s+update\b/i;
 export const insertsInto = (text: string): string[] =>
 	UPSERT.test(text) ? [] : [...text.matchAll(INSERT_INTO)].map(tableOf);
 
+const INSERT_VALUES = /\binsert\s+into\s+([\w".]+)\s*\(([^)]*)\)\s*values\s*/i;
+
+/**
+ * A plain insert's rows, by column, with the values it gives them by
+ * parameter: `insert into t (a, b) values ($1, $2), ($3, $4)`.
+ */
+export function insertedRows(
+	text: string,
+	values: readonly unknown[],
+): { table: string; rows: Map<string, unknown>[] } | undefined {
+	const head = text.match(INSERT_VALUES);
+	if (!head || UPSERT.test(text)) return undefined;
+	const columns = (head[2] ?? "").split(",").map(nameOf);
+	const rows: Map<string, unknown>[] = [];
+	let rest = text.slice((head.index ?? 0) + head[0].length);
+	while (rest.startsWith("(")) {
+		const depths = depthsOf(rest);
+		const end = depths.findIndex(
+			(depth, at) => rest[at] === ")" && depth === 1,
+		);
+		if (end < 0) break;
+		const items = splitAtDepth(rest.slice(1, end), depths.slice(1, end), 1);
+		rows.push(
+			new Map(
+				columns.flatMap((column, at) => {
+					const position = items[at]?.trim().match(/^\$(\d+)$/)?.[1];
+					return position ? [[column, values[Number(position) - 1]]] : [];
+				}),
+			),
+		);
+		rest = rest.slice(end + 1).replace(/^\s*,\s*/, "");
+	}
+	return { table: nameOf(head[1] ?? ""), rows };
+}
+
+/** A text split at the commas that sit at `depth`. */
+function splitAtDepth(text: string, depths: readonly number[], depth: number) {
+	const parts: string[] = [];
+	let start = 0;
+	for (const [at, char] of text.split("").entries())
+		if (char === "," && depths[at] === depth) {
+			parts.push(text.slice(start, at));
+			start = at + 1;
+		}
+	return [...parts, text.slice(start)];
+}
+
 const LOCKING_CLAUSE =
 	/\bfor\s+(update|no\s+key\s+update|share|key\s+share)\b((?:\s+of\s+[\w".]+(?:\s*,\s*[\w".]+)*)?)(\s+(?:nowait|skip\s+locked))?/gi;
 const SELECT = /\bselect\b/gi;

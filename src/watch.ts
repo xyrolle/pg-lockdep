@@ -1,12 +1,25 @@
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { isTableMode } from "./modes.ts";
-import { keysInAnswer, keysInWhere, readTables, type Tables } from "./rows.ts";
-import { insertsInto, type Request, requestsOf } from "./statement.ts";
+import {
+	type ForeignKeys,
+	keysInAnswer,
+	keysInWhere,
+	namedParents,
+	readCatalog,
+	type Tables,
+} from "./rows.ts";
+import {
+	insertedRows,
+	insertsInto,
+	type Request,
+	requestsOf,
+} from "./statement.ts";
 import {
 	type Control,
 	controlOf,
 	type Rows,
+	type Taken,
 	Transaction,
 } from "./transaction.ts";
 
@@ -14,7 +27,7 @@ import {
 // followed into the transaction it runs in.
 
 export type WatchOptions = {
-	/** The database under test: its catalog names each table's primary key. */
+	/** The database under test: its catalog names each table's primary key and foreign keys. */
 	connectionString: string;
 	/** Transactions whose BEGIN call site this matches aren't watched, such as a test's own that stands in for another session. */
 	ignore?: RegExp;
@@ -22,16 +35,17 @@ export type WatchOptions = {
 
 const transactions = new WeakMap<pg.Client, Transaction>();
 let tables: Tables = new Map();
+let foreignKeys: ForeignKeys = new Map();
 let ignore: RegExp | undefined;
 let installed = false;
 
 /**
  * Watches the transactions of every `pg` client in this process, pools'
  * included. Call it once before the tests run; calling it again rereads the
- * tables and replaces the options.
+ * catalog and replaces the options.
  */
 export async function watchLocks(options: WatchOptions): Promise<void> {
-	tables = await readTables(options.connectionString);
+	({ tables, foreignKeys } = await readCatalog(options.connectionString));
 	ignore = options.ignore;
 	if (installed) return;
 	installed = true;
@@ -91,13 +105,36 @@ function answered(
 			? []
 			: [{ ...request, rows: rowsOf(request, text, values, answer) }],
 	);
-	transaction.take(taken, siteOf(capture()));
+	transaction.take(
+		[...taken, ...foreignKeyChecks(text, values, answer)],
+		siteOf(capture()),
+	);
 	if (answer.rowCount === 0) return;
 	for (const table of insertsInto(text))
 		transaction.inserted(
 			table,
 			[...values, ...(keysInAnswer(answer, table, tables) ?? [])].map(String),
 		);
+}
+
+/**
+ * The parents' rows an insert's foreign-key checks hold for key share. Only
+ * a row it wrote is checked, so only an insert that wrote every row it gave
+ * names them: one that skipped some on a conflict doesn't say which.
+ */
+function foreignKeyChecks(
+	text: string,
+	values: readonly unknown[],
+	answer: pg.QueryResult,
+): Taken[] {
+	const inserted = insertedRows(text, values);
+	if (!inserted || answer.rowCount !== inserted.rows.length) return [];
+	return [...namedParents(inserted, foreignKeys)].map(([name, keys]) => ({
+		name,
+		mode: "FOR KEY SHARE",
+		waits: true,
+		rows: new Set(keys),
+	}));
 }
 
 function rowsOf(

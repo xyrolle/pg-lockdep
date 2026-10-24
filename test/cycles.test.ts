@@ -139,6 +139,51 @@ describe("an advisory lock", () => {
 	});
 });
 
+describe("a foreign key's check", () => {
+	it("takes KEY SHARE of the row an insert names, which forms a cycle with a path that holds that row for update", async () => {
+		await inTransaction(async (client) => {
+			await client.query("select id from invoice where id = 1 for update");
+			await client.query(
+				"insert into payment (id, account_id, invoice_id) values ($1, $2, $3)",
+				[1, 1, 1],
+			);
+		});
+		await inTransaction(async (client) => {
+			await client.query("select id from account where id = 1 for update");
+			await client.query("update invoice set total = 1 where id = $1", [1]);
+		});
+
+		const [cycle, ...more] = findCycles(takeEdges());
+		expect(more).toEqual([]);
+		expect(
+			cycle
+				?.map(({ held, took }) => `${held.name} > ${took.name} (${took.mode})`)
+				.sort(),
+		).toEqual([
+			"account > invoice (UPDATE)",
+			"invoice > account (FOR KEY SHARE)",
+		]);
+	});
+
+	it("forms no cycle with a path that holds the row for no key update, which KEY SHARE doesn't wait for", async () => {
+		await inTransaction(async (client) => {
+			await client.query("select id from invoice where id = 1 for update");
+			await client.query(
+				"insert into payment (id, account_id, invoice_id) values ($1, $2, $3)",
+				[1, 1, 1],
+			);
+		});
+		await inTransaction(async (client) => {
+			await client.query(
+				"select id from account where id = 1 for no key update",
+			);
+			await client.query("update invoice set total = 1 where id = $1", [1]);
+		});
+
+		expect(findCycles(takeEdges())).toEqual([]);
+	});
+});
+
 describe("LOCK TABLE", () => {
 	it("in SHARE mode forms a cycle with a path that writes the table", async () => {
 		await inTransaction(async (client) => {
