@@ -71,7 +71,8 @@ Return the rows' primary keys from the statement, or name them in its where.
 - **An edge is "held X, then asked for Y"** on rows or keys the transaction didn't already hold in a mode at least as strong. Rows it inserted are its own, and `NOWAIT`, `SKIP LOCKED` and `pg_try_…` wait for nobody, so none of them makes an edge. Rolling back to a savepoint lets go of the locks taken after it.
 - **A cycle is two edges in opposite directions whose modes conflict,** by PostgreSQL's row-level and table-level conflict tables. `FOR SHARE` against `FOR SHARE` never fails.
 - **A lock both paths held first, on the same row or key, in modes that can't be held at once, rules the cycle out.** Only the same row or key counts, as the tests ran it: a per-tenant row serializes two paths only within one tenant, which pg-lockdep can't know.
-- **When it can't tell, it doesn't fail, and it says so.** A statement whose rows it can't name, from its answer's primary keys or a `where` on them, is taken to touch rows of that table the transaction already holds, or, when it holds none, to cover every later lock of them in that transaction. Either way it's listed as keys unknown. One that touched no row took no lock.
+- **When it can't tell, it doesn't fail, and it says so.** A statement whose rows it can't name, from its answer's primary keys or a `where` on them, is taken to touch rows of that table the transaction already holds, or, when it holds none, to cover every later lock of them in that transaction. Either way it's listed as keys unknown.
+- **A statement that answered no row may still hold one.** An update, a delete or a `SELECT … FOR …` that waited for a row a concurrent writer changed, and then found it no longer matching, answers nothing but keeps that row's lock. So it counts as a lock on the rows its `where` names, or on rows it can't name. An advisory call runs once per row its statement answers, so one that answered none took no advisory lock.
 
 ## API
 

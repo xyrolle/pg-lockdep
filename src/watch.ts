@@ -82,16 +82,17 @@ function answered(
 	values: readonly unknown[],
 	answer: pg.QueryResult,
 ) {
-	// A statement that touched no row took no row lock.
-	if (answer.rowCount === 0) return;
-	// A `pg_try_…` call that answers false took nothing.
+	// An advisory call runs once per row the statement answers, so with no
+	// row it took nothing, and a `pg_try_…` call that answers false neither.
 	const refused = answer.rows.some((row) => Object.values(row).includes(false));
+	const called = answer.rowCount !== 0;
 	const taken = requestsOf(text, values).flatMap((request) =>
-		request.keys && !request.waits && refused
+		request.keys && (!called || (!request.waits && refused))
 			? []
 			: [{ ...request, rows: rowsOf(request, text, values, answer) }],
 	);
 	transaction.take(taken, siteOf(capture()));
+	if (answer.rowCount === 0) return;
 	for (const table of insertsInto(text))
 		transaction.inserted(
 			table,
@@ -106,10 +107,15 @@ function rowsOf(
 	answer: pg.QueryResult,
 ): Rows {
 	if (isTableMode(request.mode)) return "table";
+	// An answer with no row names none of the rows locked: a statement that
+	// waited for a row a concurrent writer changed, and found it no longer
+	// matching, answers nothing but keeps that row's lock (EvalPlanQual).
+	const answered =
+		answer.rowCount === 0
+			? undefined
+			: keysInAnswer(answer, request.name, tables);
 	const keys =
-		request.keys ??
-		keysInAnswer(answer, request.name, tables) ??
-		keysInWhere(text, request.name, tables, values);
+		request.keys ?? answered ?? keysInWhere(text, request.name, tables, values);
 	return keys ? new Set(keys) : "unknown";
 }
 
