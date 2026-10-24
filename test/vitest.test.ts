@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { expect, inject, it } from "vitest";
+import { beforeAll, expect, inject, it } from "vitest";
 
 /** Runs the fixture project, whose two test files take two tables in opposite orders: its exit status and its output. */
 function runFixture() {
@@ -19,8 +19,13 @@ function runFixture() {
 	return { status: run.status, output: run.stdout + run.stderr };
 }
 
+let fixture: ReturnType<typeof runFixture>;
+beforeAll(() => {
+	fixture = runFixture();
+});
+
 it("fails a Vitest run whose test files take two tables in opposite orders, naming both paths", () => {
-	const { status, output } = runFixture();
+	const { status, output } = fixture;
 
 	expect(status).toBe(1);
 	expect(output).toContain(
@@ -31,7 +36,7 @@ it("fails a Vitest run whose test files take two tables in opposite orders, nami
 });
 
 it("warns at the end of a Vitest run of the row locks whose rows it couldn't name", () => {
-	const { output } = runFixture();
+	const { output } = fixture;
 
 	expect(output).toContain(
 		"pg-lockdep couldn't name the rows of 1 row lock, keys unknown,",
