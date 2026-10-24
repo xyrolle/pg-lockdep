@@ -31,8 +31,13 @@ it("fails a Vitest run whose test files take two tables in opposite orders, nami
 	expect(output).toContain(
 		"LockCycleError: pg-lockdep found 1 lock-order cycle(s)",
 	);
-	for (const line of [18, 19, 24, 25])
-		expect(output).toContain(`at test/fixture/payments.ts:${line} `);
+	for (const side of [
+		"held account (FOR UPDATE)",
+		"took invoice (UPDATE)",
+		"held invoice (FOR UPDATE)",
+		"took account (UPDATE)",
+	])
+		expect(output).toContain(`${side} at test/fixture/payments.ts:`);
 });
 
 it("warns at the end of a Vitest run of the row locks whose rows it couldn't name", () => {
