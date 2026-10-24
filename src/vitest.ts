@@ -10,12 +10,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, inject } from "vitest";
 import type { TestProject } from "vitest/node";
-import { type Edge, findCycles, LockCycleError, takeEdges } from "./graph.ts";
+import {
+	type Edge,
+	findCycles,
+	type Lock,
+	LockCycleError,
+	takeEdges,
+} from "./graph.ts";
+import { describeUnnamed, takeUnnamed } from "./unnamed.ts";
 import { type WatchOptions, watchLocks } from "./watch.ts";
 
 // A Vitest run as one lock-order check. Test files run in their own
-// workers, so each leaves the edges it recorded in a folder the run's
-// global setup opened, and its teardown looks for cycles among them all.
+// workers, so each leaves what it recorded in a folder the run's global
+// setup opened, and its teardown looks for cycles among them all.
+
+/** What one test file recorded. */
+type Recorded = { edges: Edge[]; unnamed: Lock[] };
 
 declare module "vitest" {
 	interface ProvidedContext {
@@ -32,9 +42,10 @@ export async function recordLocks(options: WatchOptions): Promise<void> {
 		);
 	await watchLocks(options);
 	afterAll(() => {
+		const recorded: Recorded = { edges: takeEdges(), unnamed: takeUnnamed() };
 		writeFileSync(
 			join(folder, `${randomUUID()}.json`),
-			JSON.stringify(takeEdges()),
+			JSON.stringify(recorded),
 		);
 	});
 }
@@ -47,10 +58,13 @@ export function setup(project: TestProject): void {
 	project.provide("pgLockdepEdges", folder);
 }
 
-/** Vitest's global teardown: fails the run on a cycle among the edges of all its test files. */
+/**
+ * Vitest's global teardown: warns of the row locks whose rows it couldn't
+ * name, and fails the run on a cycle among the edges of all its test files.
+ */
 export function teardown(): void {
 	const files = readdirSync(folder);
-	const edges: Edge[] = files.flatMap((file) =>
+	const records: Recorded[] = files.map((file) =>
 		JSON.parse(readFileSync(join(folder, file), "utf8")),
 	);
 	rmSync(folder, { recursive: true, force: true });
@@ -58,6 +72,8 @@ export function teardown(): void {
 		throw new Error(
 			"pg-lockdep: no test file recorded its locks. Call recordLocks in a setup file of this test project.",
 		);
-	const cycles = findCycles(edges);
+	const unnamed = records.flatMap((record) => record.unnamed);
+	if (unnamed.length > 0) console.warn(describeUnnamed(unnamed));
+	const cycles = findCycles(records.flatMap((record) => record.edges));
 	if (cycles.length > 0) throw new LockCycleError(cycles);
 }
