@@ -23,8 +23,9 @@ export function describeUnnamed(locks: readonly Lock[]): string {
 	const lines = new Set(
 		locks.map(({ name, mode, site }) => `  ${name} (${mode}) at ${site}`),
 	);
+	const one = lines.size === 1;
 	return [
-		`pg-lockdep couldn't name the rows of ${lines.size} row lock(s), keys unknown, so a cycle through them may be missed.`,
+		`pg-lockdep couldn't name the rows of ${lines.size} row ${one ? "lock" : "locks"}, keys unknown, so a cycle through ${one ? "it" : "them"} may be missed.`,
 		...lines,
 		"Return the rows' primary keys from the statement, or name them in its where.",
 	].join("\n");
